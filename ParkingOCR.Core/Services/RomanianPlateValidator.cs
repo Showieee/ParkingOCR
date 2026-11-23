@@ -25,7 +25,7 @@ public partial class RomanianPlateValidator : EuropeanPlateValidator, IRomanianP
 
     public PlateValidationResult ValidateAndClean(string rawText)
     {
-        return base.ValidateAndClean(rawText, null);
+        return base.ValidateAndClean(rawText, "RO");
     }
 
     public string ApplySyntaxCorrections(string text)

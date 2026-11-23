@@ -112,16 +112,80 @@ public class LicensePlateOcrService : ILicensePlateOcrService
             float avgConf = 0f;
             List<CharacterBox> charBoxes = [];
             string countryChars = string.Empty;
+            bool candidateHasEuroband = candidate.HasEurobandStrip;
 
-            // 1. Try deep-learning sequence OCR first
+            // 1. Try deep-learning sequence OCR with visual Euroband elimination
             if (_sequenceOcr != null)
             {
-                var seq = _sequenceOcr.Recognize(candidate.PlateCrop);
-                if (!string.IsNullOrWhiteSpace(seq.RawText) && seq.RawText.Length >= 3)
+                // Run OCR on original candidate crop
+                var seqRaw = _sequenceOcr.Recognize(candidate.PlateCrop);
+
+                // Check for Euroband blue strip on the left margin and eliminate it visually
+                var (strippedCrop, hasEuroband, cutX) = StripEuroband(candidate.PlateCrop);
+                if (hasEuroband)
                 {
-                    rawText = seq.RawText;
-                    avgConf = seq.Confidence;
-                    charBoxes = seq.Characters;
+                    candidateHasEuroband = true;
+                    using (strippedCrop)
+                    {
+                        var seqStripped = _sequenceOcr.Recognize(strippedCrop);
+
+                        string cleanRaw = CleanNoiseSymbols(seqRaw.RawText);
+                        string cleanStripped = CleanNoiseSymbols(seqStripped.RawText);
+
+                        int rawAlphanumeric = CountAlphanumeric(cleanRaw);
+                        int strippedAlphanumeric = CountAlphanumeric(cleanStripped);
+
+                        string? inferredCountry = InferCountryFromEuroband(cleanRaw, cleanStripped);
+                        if (!string.IsNullOrEmpty(inferredCountry))
+                        {
+                            countryChars = inferredCountry;
+                        }
+
+                        // When Euroband is eliminated:
+                        // Prefer stripped if it recognized valid plate characters (>= 3) AND
+                        // (has equal/more characters than raw OR raw had a recognized country prefix that was removed)
+                        bool preferStripped = strippedAlphanumeric >= 3 &&
+                                              (strippedAlphanumeric >= rawAlphanumeric || !string.IsNullOrEmpty(inferredCountry));
+
+                        if (preferStripped)
+                        {
+                            rawText = seqStripped.RawText;
+                            avgConf = seqStripped.Confidence;
+                            charBoxes = seqStripped.Characters.Select(c => c with
+                            {
+                                Box = new PlateRectangle(c.Box.X + cutX, c.Box.Y, c.Box.Width, c.Box.Height)
+                            }).ToList();
+                        }
+                        else
+                        {
+                            rawText = seqRaw.RawText;
+                            avgConf = seqRaw.Confidence;
+                            charBoxes = seqRaw.Characters;
+                        }
+                    }
+                }
+                else
+                {
+                    if (!string.IsNullOrWhiteSpace(seqRaw.RawText) && seqRaw.RawText.Length >= 3)
+                    {
+                        rawText = seqRaw.RawText;
+                        avgConf = seqRaw.Confidence;
+                        charBoxes = seqRaw.Characters;
+                    }
+                }
+
+                // If text seems short or has dark shadow, test contrast enhancement (CLAHE)
+                if (CountAlphanumeric(rawText) <= 6 && !candidate.PlateCrop.Empty())
+                {
+                    using var enhanced = EnhanceContrast(candidate.PlateCrop);
+                    var seqEnhanced = _sequenceOcr.Recognize(enhanced);
+                    string cleanEnhanced = CleanNoiseSymbols(seqEnhanced.RawText);
+                    if (CountAlphanumeric(cleanEnhanced) > CountAlphanumeric(rawText))
+                    {
+                        rawText = seqEnhanced.RawText;
+                        avgConf = seqEnhanced.Confidence;
+                        charBoxes = seqEnhanced.Characters;
+                    }
                 }
             }
 
@@ -189,10 +253,22 @@ public class LicensePlateOcrService : ILicensePlateOcrService
                         charBoxes[i] = charBoxes[i] with { IsCountryCode = true };
                     }
                 }
-                else if (detectedCountry != null && cleanPlate.StartsWith(detectedCountry, StringComparison.OrdinalIgnoreCase))
+                else if (detectedCountry != null && (cleanPlate.StartsWith(detectedCountry + " ", StringComparison.OrdinalIgnoreCase) ||
+                                                      cleanPlate.StartsWith(detectedCountry + "-", StringComparison.OrdinalIgnoreCase) ||
+                                                      cleanPlate.StartsWith(detectedCountry + "_", StringComparison.OrdinalIgnoreCase)))
                 {
-                    cleanPlate = cleanPlate[detectedCountry.Length..].Trim();
-                    for (int i = 0; i < Math.Min(detectedCountry.Length, charBoxes.Count); i++)
+                    int cutLen = detectedCountry.Length + 1;
+                    cleanPlate = cleanPlate[cutLen..].Trim();
+                    for (int i = 0; i < Math.Min(cutLen, charBoxes.Count); i++)
+                    {
+                        charBoxes[i] = charBoxes[i] with { IsCountryCode = true };
+                    }
+                }
+                else if (cleanPlate.StartsWith("RO ", StringComparison.OrdinalIgnoreCase) || cleanPlate.StartsWith("R0 ", StringComparison.OrdinalIgnoreCase))
+                {
+                    detectedCountry ??= "RO";
+                    cleanPlate = cleanPlate[3..].Trim();
+                    for (int i = 0; i < Math.Min(3, charBoxes.Count); i++)
                     {
                         charBoxes[i] = charBoxes[i] with { IsCountryCode = true };
                     }
@@ -305,22 +381,21 @@ public class LicensePlateOcrService : ILicensePlateOcrService
         {
             return "D";
         }
-        if (upperRaw.StartsWith("F ") || upperRaw.StartsWith("F-") || Regex.IsMatch(compact, @"^[A-Z]{1,2}\d{3}[A-Z]{2}$"))
+        if (upperRaw.StartsWith("F ") || upperRaw.StartsWith("F-"))
         {
             return "F";
         }
-        if (upperRaw.StartsWith("E ") || upperRaw.StartsWith("E-") || Regex.IsMatch(compact, @"^\d{4}[A-Z]{3}$") || Regex.IsMatch(compact, @"^E\d{4}[A-Z]{3}$"))
+        if (upperRaw.StartsWith("E ") || upperRaw.StartsWith("E-"))
         {
             return "E";
         }
-
-        string[] twoLetterCodes = ["RO", "PL", "NL", "CH", "CZ", "SK", "BG", "GB", "UK", "HR", "SI", "DK", "FI", "NO", "PT", "IE", "LU", "GR", "EU", "HU"];
-        foreach (var code in twoLetterCodes)
+        if (upperRaw.StartsWith("PL ") || upperRaw.StartsWith("PL-"))
         {
-            if (compact.StartsWith(code) && compact.Length >= code.Length + 4)
-            {
-                return code;
-            }
+            return "PL";
+        }
+        if (upperRaw.StartsWith("UK ") || upperRaw.StartsWith("UK-") || upperRaw.StartsWith("GB ") || upperRaw.StartsWith("GB-"))
+        {
+            return "UK";
         }
 
         // 4. Country code from European plate formats if Euroband is present
@@ -337,22 +412,155 @@ public class LicensePlateOcrService : ILicensePlateOcrService
 
             // Romanian: B 123 ABC or CJ 12 ABC
             if (Regex.IsMatch(compact, @"^B\d{2,3}[A-Z]{3}$") ||
-                (compact.Length is 7 or 8 && EuropeanPlateValidator.RomanianCounties.Contains(compact[..2]) && char.IsDigit(compact[2]) && char.IsLetter(compact[^1])))
+                (compact.Length is 6 or 7 or 8 && EuropeanPlateValidator.RomanianCounties.Contains(compact[..2]) && (char.IsDigit(compact[2]) || compact[2] is 'O' or 'I') && char.IsLetter(compact[^1])))
             {
                 return "RO";
             }
 
+            // Spanish: 1234 BCD
+            if (Regex.IsMatch(compact, @"^\d{4}[A-Z]{3}$") || Regex.IsMatch(compact, @"^E\d{4}[A-Z]{3}$"))
+            {
+                return "E";
+            }
+
+            // French: AA 123 AA
+            if (Regex.IsMatch(compact, @"^[A-Z]{2}\d{3}[A-Z]{2}$"))
+            {
+                return "F";
+            }
+
             // Polish: WA 12345
             if (Regex.IsMatch(compact, @"^[A-Z]{2,3}[A-Z0-9]{4,5}$") &&
-                (compact.StartsWith("W") || compact.StartsWith("K") || compact.StartsWith("P")))
+                !Regex.IsMatch(compact, @"^B\d{2,3}[A-Z]{3}$") &&
+                (compact.Length != 7 || !EuropeanPlateValidator.RomanianCounties.Contains(compact[..2])))
             {
                 return "PL";
             }
 
-            return "RO"; // Default Euroband fallback for Romanian parking
+            return null;
         }
 
         return null;
+    }
+
+    private static (Mat strippedCrop, bool hasEuroband, int cutX) StripEuroband(Mat plateCrop)
+    {
+        if (plateCrop.Empty() || plateCrop.Cols < 20 || plateCrop.Rows < 10)
+        {
+            return (plateCrop.Clone(), false, 0);
+        }
+
+        int h = plateCrop.Rows;
+        int w = plateCrop.Cols;
+
+        using var hsv = new Mat();
+        Cv2.CvtColor(plateCrop, hsv, ColorConversionCodes.BGR2HSV);
+
+        // Euroband Blue range in HSV: H: 98-132, S: 65-255, V: 40-255
+        using var blueMask = new Mat();
+        Cv2.InRange(hsv, new Scalar(98, 65, 40), new Scalar(132, 255, 255), blueMask);
+
+        // On European plates, the Euroband is at most 15% of the plate width
+        int maxCheck = Math.Min(w, (int)(w * 0.15));
+        int consecutiveBlue = 0;
+        int lastBlueX = 0;
+        int gapCount = 0;
+
+        for (int x = 0; x < maxCheck; x++)
+        {
+            int blueCount = 0;
+            for (int y = 0; y < h; y++)
+            {
+                if (blueMask.At<byte>(y, x) > 0)
+                    blueCount++;
+            }
+
+            double density = (double)blueCount / h;
+            if (density >= 0.22)
+            {
+                consecutiveBlue++;
+                lastBlueX = x;
+                gapCount = 0;
+            }
+            else
+            {
+                if (consecutiveBlue >= 3)
+                {
+                    gapCount++;
+                    if (gapCount >= 2)
+                        break;
+                }
+            }
+        }
+
+        if (consecutiveBlue >= 3 && lastBlueX > 0 && lastBlueX < (int)(w * 0.16))
+        {
+            int cutX = lastBlueX + 1;
+            Rect roi = new Rect(cutX, 0, w - cutX, h);
+            return (new Mat(plateCrop, roi).Clone(), true, cutX);
+        }
+
+        return (plateCrop.Clone(), false, 0);
+    }
+
+    private static string CleanNoiseSymbols(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+        string s = Regex.Replace(text, @"^[+:\-_„\.\s]+", "");
+        s = Regex.Replace(s, @"[+:\-_„\.\s]+$", "");
+        return s.Trim();
+    }
+
+    private static int CountAlphanumeric(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return 0;
+        return text.Count(char.IsLetterOrDigit);
+    }
+
+    private static string? InferCountryFromEuroband(string rawText, string strippedText)
+    {
+        string r = Regex.Replace(rawText.ToUpperInvariant(), @"[^A-Z0-9]", "");
+        string s = Regex.Replace(strippedText.ToUpperInvariant(), @"[^A-Z0-9]", "");
+
+        if (r.Length > s.Length && r.EndsWith(s))
+        {
+            string prefix = r[..^s.Length];
+            if (prefix is "RO" or "R0" or "R") return "RO";
+            if (prefix is "PL") return "PL";
+            if (prefix is "D") return "D";
+            if (prefix is "F") return "F";
+            if (prefix is "E") return "E";
+            if (prefix is "I") return "I";
+            if (prefix is "UK" or "GB") return "UK";
+            if (prefix is "CZ") return "CZ";
+            if (prefix is "SK") return "SK";
+            if (prefix is "NL") return "NL";
+            if (prefix is "B") return "B";
+            if (prefix is "A") return "A";
+        }
+
+        if (r.StartsWith("RO") || r.StartsWith("R0") || r.StartsWith("RCJ")) return "RO";
+        if (r.StartsWith("PL")) return "PL";
+        if (r.StartsWith("E") && Regex.IsMatch(s, @"^\d{4}")) return "E";
+        if (r.StartsWith("A") && s.StartsWith("AA")) return "F";
+        if (r.StartsWith("UK") || r.StartsWith("GB")) return "UK";
+
+        return null;
+    }
+
+    private static Mat EnhanceContrast(Mat crop)
+    {
+        using var lab = new Mat();
+        Cv2.CvtColor(crop, lab, ColorConversionCodes.BGR2Lab);
+        Mat[] channels = Cv2.Split(lab);
+        using var clahe = Cv2.CreateCLAHE(clipLimit: 2.0, tileGridSize: new Size(4, 4));
+        clahe.Apply(channels[0], channels[0]);
+        using var merged = new Mat();
+        Cv2.Merge(channels, merged);
+        foreach (var c in channels) c.Dispose();
+        var enhanced = new Mat();
+        Cv2.CvtColor(merged, enhanced, ColorConversionCodes.Lab2BGR);
+        return enhanced;
     }
 
     private static byte[] GenerateAnnotatedImage(Mat original, LicensePlateResult result)

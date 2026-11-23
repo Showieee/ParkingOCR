@@ -226,13 +226,19 @@ public class LicensePlateOcrServiceIntegrationTests
         _output.WriteLine($"images (3).jpg -> Plate='{rTesla.PlateText}', Country='{rTesla.CountryCode}'");
         Assert.Equal("IF 01 TMX", rTesla.PlateText);
 
-        // 5. Blue BMW in trees -> B 58 BPS (works for both images (8).jpg and images (13).jpg)
-        string bmwTreesFile = Path.Combine(TestImagesDir, "images (8).jpg");
+        // 5. Blue BMW in trees -> B 58 BPS (images (13).jpg)
+        string bmwTreesFile = Path.Combine(TestImagesDir, "images (13).jpg");
         var rBmwTrees = await service.RecognizePlateAsync(bmwTreesFile);
         _output.WriteLine($"Blue BMW in trees ({Path.GetFileName(bmwTreesFile)}) -> Plate='{rBmwTrees.PlateText}', Country='{rBmwTrees.CountryCode}'");
         Assert.Equal("B 58 BPS", rBmwTrees.PlateText);
 
-        // 6. swiss_zh84521.jpg -> ZH 84521
+        // 6. White Skoda -> LU 068SX (images (8).jpg)
+        string skodaFile = Path.Combine(TestImagesDir, "images (8).jpg");
+        var rSkoda = await service.RecognizePlateAsync(skodaFile);
+        _output.WriteLine($"White Skoda ({Path.GetFileName(skodaFile)}) -> Plate='{rSkoda.PlateText}'");
+        Assert.Contains("068", rSkoda.PlateText);
+
+        // 7. swiss_zh84521.jpg -> ZH 84521
         var rSwiss = await service.RecognizePlateAsync(Path.Combine(TestImagesDir, "swiss_zh84521.jpg"));
         _output.WriteLine($"swiss_zh84521.jpg -> Plate='{rSwiss.PlateText}', Country='{rSwiss.CountryCode}'");
         Assert.Equal("ZH 84521", rSwiss.PlateText);

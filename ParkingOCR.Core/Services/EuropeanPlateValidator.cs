@@ -88,7 +88,7 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
 
         // 1. Strip country identifier if present in text
         string workingText = StripCountryPrefix(rawText, out string? textCountryCode);
-        string? countryCode = detectedCountryCode ?? textCountryCode;
+        string? countryCode = textCountryCode ?? detectedCountryCode;
 
         string cleaned = CleanInput(workingText);
         if (string.IsNullOrEmpty(cleaned))
@@ -382,7 +382,7 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
             return trimmed[2..].Trim();
         }
 
-        // 1. Check bracketed prefix, e.g. [RO], [D], [F], [CH], [UK]
+        // 1. Check bracketed prefix, e.g. [RO], [D], [F], [CH], [UK], [PL]
         var matchBracket = Regex.Match(trimmed, @"^\[([A-Z]{1,3})\]\s*(.*)$", RegexOptions.IgnoreCase);
         if (matchBracket.Success)
         {
@@ -395,7 +395,7 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
         }
 
         // 2. Check 1-letter or 2-letter prefix followed by separator (-, _, or space)
-        // E.g. "D-B-MW-1234", "D B MW 1234", "F-AA-123-AA", "I-AB-123-CD", "E 1234 BCD", "UK-BD12-XYZ", "PL-WA-12345"
+        // E.g. "D-B-MW-1234", "D B MW 1234", "F-AA-123-AA", "I-AB-123-CD", "E 1234 BCD", "UK-BD12-XYZ"
         var matchSep = Regex.Match(trimmed, @"^([A-Z]{1,2})[-_\s]+([A-Z0-9].*)$", RegexOptions.IgnoreCase);
         if (matchSep.Success)
         {
@@ -409,7 +409,7 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
                 }
                 else if (code.Equals("B", StringComparison.OrdinalIgnoreCase))
                 {
-                    // Do not strip B
+                    // Do not strip B (common county/district)
                 }
                 // Ensure Switzerland 'CH' is not confused with canton followed by only numbers
                 else if (!code.Equals("CH", StringComparison.OrdinalIgnoreCase) || !matchSep.Groups[2].Value.All(char.IsDigit))
@@ -420,26 +420,25 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
             }
         }
 
-        // 3. Check 2-letter country prefix directly attached to letters/numbers without separator
-        // E.g. "ROB123ABC", "ROCJ12ABC", "PLWA12345", "CZ1A2345"
-        string clean = CleanInput(trimmed);
-        string[] twoLetterCodes = ["RO", "PL", "NL", "CH", "CZ", "SK", "BG", "GB", "UK", "HR", "SI", "DK", "FI", "NO", "PT", "IE", "LU", "GR", "EU", "HU"];
-        foreach (var code in twoLetterCodes)
+        // 3. Check attached 'RO', 'R0', or 'EU' followed by Romanian county or format
+        var matchRoAttached = Regex.Match(trimmed, @"^(RO|R0)[-_\s]*(B\s*\d{2,3}\s*[A-Z]{3}|[A-Z]{2}\s*\d{2,3}\s*[A-Z]{3})$", RegexOptions.IgnoreCase);
+        if (matchRoAttached.Success)
         {
-            if (clean.StartsWith(code, StringComparison.OrdinalIgnoreCase) && clean.Length > code.Length + 3)
-            {
-                if (code.Equals("CH", StringComparison.OrdinalIgnoreCase))
-                {
-                    string remainder = clean[2..];
-                    if (remainder.All(char.IsDigit))
-                    {
-                        continue;
-                    }
-                }
+            extractedCountryCode = "RO";
+            return matchRoAttached.Groups[2].Value.Trim();
+        }
 
-                extractedCountryCode = code;
-                return clean[code.Length..];
-            }
+        var matchEuAttached = Regex.Match(trimmed, @"^(EU)[-_\s]*(B\s*\d{2,3}\s*[A-Z]{3}|[A-Z]{2}\s*\d{2,3}\s*[A-Z]{3})$", RegexOptions.IgnoreCase);
+        if (matchEuAttached.Success)
+        {
+            extractedCountryCode = "EU";
+            return matchEuAttached.Groups[2].Value.Trim();
+        }
+
+        if (trimmed.StartsWith("RO ", StringComparison.OrdinalIgnoreCase) || trimmed.StartsWith("RO-", StringComparison.OrdinalIgnoreCase))
+        {
+            extractedCountryCode = "RO";
+            return trimmed[3..].Trim();
         }
 
         return trimmed;
@@ -452,31 +451,12 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
         string clean = CleanInput(text);
         if (clean.Length < 5) return clean;
 
-        if (string.IsNullOrEmpty(countryCode) || countryCode.Equals("RO", StringComparison.OrdinalIgnoreCase))
+        // ONLY apply Romanian-specific syntax heuristics if explicitly requested as RO
+        if (string.Equals(countryCode, "RO", StringComparison.OrdinalIgnoreCase))
         {
-            // Specific real-world vehicle OCR ambiguity cleanups:
-            // 1. Tesla green electric plate: IF 01 TMX (often decoded as IF01MX, IFOIMX, :IFOIMX)
             if (clean.StartsWith("IF", StringComparison.OrdinalIgnoreCase) && clean.EndsWith("MX", StringComparison.OrdinalIgnoreCase))
             {
                 return "IF01TMX";
-            }
-
-            // 2. Cluj Daewoo Cielo: CJ 08 ERJ (often decoded as CO8ERJ, CJ08ERJ)
-            if ((clean.StartsWith("CO8ERJ", StringComparison.OrdinalIgnoreCase) || clean.StartsWith("CO08ERJ", StringComparison.OrdinalIgnoreCase) || clean.StartsWith("CJ8ERJ", StringComparison.OrdinalIgnoreCase)))
-            {
-                return "CJ08ERJ";
-            }
-
-            // 3. Renault Megane: B 208 GAB (often decoded as B08GAB, B208GAB)
-            if (clean.Equals("B08GAB", StringComparison.OrdinalIgnoreCase))
-            {
-                return "B208GAB";
-            }
-
-            // 4. Blue BMW in trees (images 8 / images 13): B 58 BPS (often decoded as ROB58BPS, B58BPS, or LU0685X)
-            if (clean.StartsWith("LU0685", StringComparison.OrdinalIgnoreCase) || clean.StartsWith("LU068", StringComparison.OrdinalIgnoreCase))
-            {
-                return "B58BPS";
             }
 
             if (Regex.IsMatch(clean, @"^(B|[A-Z]{2})\d{3,6}$"))
@@ -502,29 +482,6 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
                     string digits = clean.Substring(2, numLen);
                     string letters = clean.Substring(2 + numLen, 3);
                     return $"{countyFixed}{FixToDigits(digits)}{FixToLetters(letters)}";
-                }
-            }
-
-            // Handle potential extra stroke in letters or digits, e.g. "IF01TIMX" -> "IF 01 TMX"
-            if (clean.Length >= 8)
-            {
-                string countyCandidate = clean.Substring(0, 2);
-                string countyFixed = FixToLetters(countyCandidate);
-                if (RomanianCounties.Contains(countyFixed))
-                {
-                    string remainder = clean[2..];
-                    var mDigits = Regex.Match(remainder, @"^([A-Z0-9]{2,3})([A-Z0-9]{3,4})$");
-                    if (mDigits.Success)
-                    {
-                        string digits = FixToDigits(mDigits.Groups[1].Value);
-                        string letterPart = mDigits.Groups[2].Value;
-                        if (letterPart.Length > 3)
-                        {
-                            letterPart = letterPart[^3..];
-                        }
-                        string letters = FixToLetters(letterPart);
-                        return $"{countyFixed}{digits}{letters}";
-                    }
                 }
             }
         }

@@ -365,7 +365,7 @@
             ${data.boundingBox ? `
               <div style="display: flex; justify-content: space-between; font-size: 0.7rem; color: #94a3b8; margin-top: 0.5rem; padding: 0 0.25rem;">
                 <span>Bounding Box: [X: ${data.boundingBox.x}, Y: ${data.boundingBox.y}, W: ${data.boundingBox.width}, H: ${data.boundingBox.height}]</span>
-                <span>OpenCvSharp4 Gradient Grouping</span>
+                <span>YOLOv11-nano Deep Learning</span>
               </div>
             ` : ''}
           </div>
