@@ -495,7 +495,7 @@ public class LicensePlateOcrService : ILicensePlateOcrService
 
         if (consecutiveBlue >= 3 && lastBlueX > 0 && lastBlueX < (int)(w * 0.16))
         {
-            int cutX = lastBlueX + 1;
+            int cutX = w < 120 ? lastBlueX + 1 : Math.Min(w - 10, lastBlueX + 2);
             Rect roi = new Rect(cutX, 0, w - cutX, h);
             return (new Mat(plateCrop, roi).Clone(), true, cutX);
         }

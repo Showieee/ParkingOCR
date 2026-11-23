@@ -274,7 +274,7 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
 
         // 7. Check FRENCH Plate (F) / ITALIAN Plate (I)
         var matchFrIt = Regex.Match(corrected, @"^([A-Z]{1,2})(\d{3})([A-Z]{2})$", RegexOptions.IgnoreCase);
-        if (matchFrIt.Success && (countryCode == "F" || countryCode == "I" || countryCode == null))
+        if (matchFrIt.Success && (countryCode == "F" || countryCode == "I"))
         {
             string p1 = matchFrIt.Groups[1].Value.ToUpperInvariant();
             if (p1.Length == 1) p1 = "A" + p1;
@@ -394,28 +394,26 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
             }
         }
 
-        // 2. Check 1-letter or 2-letter prefix followed by separator (-, _, or space)
-        // E.g. "D-B-MW-1234", "D B MW 1234", "F-AA-123-AA", "I-AB-123-CD", "E 1234 BCD", "UK-BD12-XYZ"
-        var matchSep = Regex.Match(trimmed, @"^([A-Z]{1,2})[-_\s]+([A-Z0-9].*)$", RegexOptions.IgnoreCase);
-        if (matchSep.Success)
+        // 2a. Check 1-letter country prefix followed by space, hyphen or underscore: "D B MW 1234", "D-B-MW-1234", "E 1234 BCD", "F-AA-123-AA"
+        var matchSingleSep = Regex.Match(trimmed, @"^([DFEI])[-_\s]+([A-Z0-9].*)$", RegexOptions.IgnoreCase);
+        if (matchSingleSep.Success)
         {
-            string code = matchSep.Groups[1].Value.ToUpperInvariant();
+            extractedCountryCode = matchSingleSep.Groups[1].Value.ToUpperInvariant();
+            return matchSingleSep.Groups[2].Value.Trim();
+        }
+
+        // 2b. Check 2-letter country prefix followed strictly by hyphen or underscore: "UK-BD12-XYZ", "GB-LN14-ABC", "RO-B-123-ABC"
+        // Note: 2-letter codes with spaces (e.g. "LU 068SX", "WA 12345", "CJ 08 ERJ") are NOT stripped because they represent cities/regions!
+        var matchHyphenSep = Regex.Match(trimmed, @"^([A-Z]{2})[-_]+([A-Z0-9].*)$", RegexOptions.IgnoreCase);
+        if (matchHyphenSep.Success)
+        {
+            string code = matchHyphenSep.Groups[1].Value.ToUpperInvariant();
             if (CountryNames.ContainsKey(code))
             {
-                // Single-letter country codes are strictly D (Germany), F (France), E (Spain), I (Italy)
-                if (code.Length == 1 && code != "D" && code != "F" && code != "E" && code != "I")
-                {
-                    // Do not strip other single letters (like 'A', 'B', 'C') as countries
-                }
-                else if (code.Equals("B", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Do not strip B (common county/district)
-                }
-                // Ensure Switzerland 'CH' is not confused with canton followed by only numbers
-                else if (!code.Equals("CH", StringComparison.OrdinalIgnoreCase) || !matchSep.Groups[2].Value.All(char.IsDigit))
+                if (!code.Equals("CH", StringComparison.OrdinalIgnoreCase) || !matchHyphenSep.Groups[2].Value.All(char.IsDigit))
                 {
                     extractedCountryCode = code;
-                    return matchSep.Groups[2].Value;
+                    return matchHyphenSep.Groups[2].Value.Trim();
                 }
             }
         }
