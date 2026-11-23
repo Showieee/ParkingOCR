@@ -18,6 +18,15 @@
     <EmbeddedResource Include="Resources\char_classifier.onnx">
       <LogicalName>ParkingOCR.Core.Resources.char_classifier.onnx</LogicalName>
     </EmbeddedResource>
+    <EmbeddedResource Include="Resources\yolo_plate.onnx">
+      <LogicalName>ParkingOCR.Core.Resources.yolo_plate.onnx</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Resources\rec.onnx">
+      <LogicalName>ParkingOCR.Core.Resources.rec.onnx</LogicalName>
+    </EmbeddedResource>
+    <EmbeddedResource Include="Resources\dict.txt">
+      <LogicalName>ParkingOCR.Core.Resources.dict.txt</LogicalName>
+    </EmbeddedResource>
   </ItemGroup>
 
 </Project>

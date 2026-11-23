@@ -19,18 +19,21 @@ public class LicensePlateOcrService : ILicensePlateOcrService
     private readonly ICharacterSegmenter _characterSegmenter;
     private readonly ICharacterClassifier _characterClassifier;
     private readonly IEuropeanPlateValidator _europeanValidator;
+    private readonly IPlateSequenceOcr? _sequenceOcr;
 
     [ActivatorUtilitiesConstructor]
     public LicensePlateOcrService(
         IPlateDetector plateDetector,
         ICharacterSegmenter characterSegmenter,
         ICharacterClassifier characterClassifier,
-        IEuropeanPlateValidator europeanValidator)
+        IEuropeanPlateValidator europeanValidator,
+        IPlateSequenceOcr? sequenceOcr = null)
     {
         _plateDetector = plateDetector ?? throw new ArgumentNullException(nameof(plateDetector));
         _characterSegmenter = characterSegmenter ?? throw new ArgumentNullException(nameof(characterSegmenter));
         _characterClassifier = characterClassifier ?? throw new ArgumentNullException(nameof(characterClassifier));
         _europeanValidator = europeanValidator ?? throw new ArgumentNullException(nameof(europeanValidator));
+        _sequenceOcr = sequenceOcr;
     }
 
     public LicensePlateOcrService(
@@ -38,7 +41,7 @@ public class LicensePlateOcrService : ILicensePlateOcrService
         ICharacterSegmenter characterSegmenter,
         ICharacterClassifier characterClassifier,
         IRomanianPlateValidator romanianValidator)
-        : this(plateDetector, characterSegmenter, characterClassifier, (IEuropeanPlateValidator)romanianValidator)
+        : this(plateDetector, characterSegmenter, characterClassifier, (IEuropeanPlateValidator)romanianValidator, null)
     {
     }
 
@@ -105,51 +108,72 @@ public class LicensePlateOcrService : ILicensePlateOcrService
 
         foreach (var candidate in plateCandidates)
         {
-            var segmentedChars = _characterSegmenter.SegmentCharacters(candidate.PlateCrop, candidate.HasEurobandStrip, candidate.HasSwissShield);
-            if (segmentedChars.Count == 0)
+            string rawText = string.Empty;
+            float avgConf = 0f;
+            List<CharacterBox> charBoxes = [];
+            string countryChars = string.Empty;
+
+            // 1. Try deep-learning sequence OCR first
+            if (_sequenceOcr != null)
             {
-                candidate.Dispose();
-                continue;
+                var seq = _sequenceOcr.Recognize(candidate.PlateCrop);
+                if (!string.IsNullOrWhiteSpace(seq.RawText) && seq.RawText.Length >= 3)
+                {
+                    rawText = seq.RawText;
+                    avgConf = seq.Confidence;
+                    charBoxes = seq.Characters;
+                }
             }
 
-            var charBoxes = new List<CharacterBox>();
-            var plateCharsSb = new StringBuilder();
-            var countryCharsSb = new StringBuilder();
-            float confidenceSum = 0f;
-            int plateCharCount = 0;
-
-            foreach (var sc in segmentedChars)
+            // 2. Fallback to classical character segmentation + classifier if sequence OCR produced no text
+            if (string.IsNullOrWhiteSpace(rawText))
             {
-                var (character, conf) = _characterClassifier.Classify(sc.Crop);
-
-                if (sc.IsCountryCode)
+                var segmentedChars = _characterSegmenter.SegmentCharacters(candidate.PlateCrop, candidate.HasEurobandStrip, candidate.HasSwissShield);
+                if (segmentedChars.Count == 0)
                 {
-                    countryCharsSb.Append(character);
-                }
-                else
-                {
-                    plateCharsSb.Append(character);
-                    confidenceSum += conf;
-                    plateCharCount++;
+                    candidate.Dispose();
+                    continue;
                 }
 
-                charBoxes.Add(new CharacterBox(
-                    character,
-                    conf,
-                    sc.Box,
-                    sc.IsCountryCode
-                ));
+                var plateCharsSb = new StringBuilder();
+                var countryCharsSb = new StringBuilder();
+                float confidenceSum = 0f;
+                int plateCharCount = 0;
 
-                sc.Dispose();
+                foreach (var sc in segmentedChars)
+                {
+                    var (character, conf) = _characterClassifier.Classify(sc.Crop);
+
+                    if (sc.IsCountryCode)
+                    {
+                        countryCharsSb.Append(character);
+                    }
+                    else
+                    {
+                        plateCharsSb.Append(character);
+                        confidenceSum += conf;
+                        plateCharCount++;
+                    }
+
+                    charBoxes.Add(new CharacterBox(
+                        character,
+                        conf,
+                        sc.Box,
+                        sc.IsCountryCode
+                    ));
+
+                    sc.Dispose();
+                }
+
+                rawText = plateCharsSb.ToString();
+                countryChars = countryCharsSb.ToString();
+                avgConf = plateCharCount > 0 ? confidenceSum / plateCharCount : 0f;
             }
 
-            string rawText = plateCharsSb.ToString();
-            float avgConf = plateCharCount > 0 ? confidenceSum / plateCharCount : 0f;
+            // 3. Determine Country Code from Euroband or text prefix
+            string? detectedCountry = ResolveCountryCode(candidate, countryChars, rawText);
 
-            // 1. Determine Country Code from Euroband or text prefix
-            string? detectedCountry = ResolveCountryCode(candidate, countryCharsSb.ToString(), rawText);
-
-            // 2. Strip Country Identifier if requested and present in text
+            // 4. Strip Country Identifier if requested and present in text
             string cleanPlate = rawText;
             if (options.FilterCountryCode)
             {
@@ -175,7 +199,7 @@ public class LicensePlateOcrService : ILicensePlateOcrService
                 }
             }
 
-            // 3. Validate and clean with European plate validator
+            // 5. Validate and clean with European plate validator
             var validation = _europeanValidator.ValidateAndClean(cleanPlate, detectedCountry);
             string finalPlateText = validation.FormattedPlate;
             if (string.IsNullOrEmpty(detectedCountry))
@@ -269,12 +293,31 @@ public class LicensePlateOcrService : ILicensePlateOcrService
             return "UK";
         }
 
+        string upperRaw = rawText.ToUpperInvariant().Trim();
+        string compact = Regex.Replace(upperRaw, @"[^A-Z0-9]", "");
+
         // 3. Text prefix check
-        string upperRaw = rawText.ToUpperInvariant();
+        if (upperRaw.StartsWith("RO ") || upperRaw.StartsWith("RO-") || upperRaw.StartsWith("R0 ") || upperRaw.StartsWith("R0-"))
+        {
+            return "RO";
+        }
+        if (upperRaw.StartsWith("D ") || upperRaw.StartsWith("D-"))
+        {
+            return "D";
+        }
+        if (upperRaw.StartsWith("F ") || upperRaw.StartsWith("F-") || Regex.IsMatch(compact, @"^[A-Z]{1,2}\d{3}[A-Z]{2}$"))
+        {
+            return "F";
+        }
+        if (upperRaw.StartsWith("E ") || upperRaw.StartsWith("E-") || Regex.IsMatch(compact, @"^\d{4}[A-Z]{3}$") || Regex.IsMatch(compact, @"^E\d{4}[A-Z]{3}$"))
+        {
+            return "E";
+        }
+
         string[] twoLetterCodes = ["RO", "PL", "NL", "CH", "CZ", "SK", "BG", "GB", "UK", "HR", "SI", "DK", "FI", "NO", "PT", "IE", "LU", "GR", "EU", "HU"];
         foreach (var code in twoLetterCodes)
         {
-            if (upperRaw.StartsWith(code) && upperRaw.Length >= code.Length + 4)
+            if (compact.StartsWith(code) && compact.Length >= code.Length + 4)
             {
                 return code;
             }
@@ -283,35 +326,25 @@ public class LicensePlateOcrService : ILicensePlateOcrService
         // 4. Country code from European plate formats if Euroband is present
         if (candidate.HasEurobandStrip)
         {
-            // Romanian: B 123 ABC or CJ 12 ABC
-            if (Regex.IsMatch(upperRaw, @"^B\d{2,3}[A-Z]{3}$") ||
-                (upperRaw.Length is 7 or 8 && EuropeanPlateValidator.RomanianCounties.Contains(upperRaw[..2]) && char.IsDigit(upperRaw[2]) && char.IsLetter(upperRaw[^1])))
-            {
-                return "RO";
-            }
-
-            // French: AA 123 AA
-            if (Regex.IsMatch(upperRaw, @"^[A-Z]{2}\d{3}[A-Z]{2}$"))
-            {
-                return "F";
-            }
-
-            // Spanish: 1234 BCD
-            if (Regex.IsMatch(upperRaw, @"^\d{4}[A-Z]{3}$"))
-            {
-                return "E";
-            }
-
-            // German: District + Letters + Digits (e.g. B MW 1234, HH XY 999)
-            if (Regex.IsMatch(upperRaw, @"^[A-Z]{1,3}[A-Z]{1,2}\d{1,4}$") &&
-                EuropeanPlateValidator.GermanDistricts.Any(d => upperRaw.StartsWith(d)))
+            // German: District (1-3 letters) + Letters (1-2) + Digits (1-4) -> e.g. B MW 1234, HH XY 999
+            // German plates end in digits, while standard Romanian plates end in letters!
+            if (Regex.IsMatch(compact, @"^[A-Z]{1,3}[A-Z]{1,2}\d{1,4}$") &&
+                !Regex.IsMatch(compact, @"^B\d{2,3}[A-Z]{3}$") &&
+                EuropeanPlateValidator.GermanDistricts.Any(d => compact.StartsWith(d)))
             {
                 return "D";
             }
 
+            // Romanian: B 123 ABC or CJ 12 ABC
+            if (Regex.IsMatch(compact, @"^B\d{2,3}[A-Z]{3}$") ||
+                (compact.Length is 7 or 8 && EuropeanPlateValidator.RomanianCounties.Contains(compact[..2]) && char.IsDigit(compact[2]) && char.IsLetter(compact[^1])))
+            {
+                return "RO";
+            }
+
             // Polish: WA 12345
-            if (Regex.IsMatch(upperRaw, @"^[A-Z]{2,3}[A-Z0-9]{4,5}$") &&
-                (upperRaw.StartsWith("W") || upperRaw.StartsWith("K") || upperRaw.StartsWith("P")))
+            if (Regex.IsMatch(compact, @"^[A-Z]{2,3}[A-Z0-9]{4,5}$") &&
+                (compact.StartsWith("W") || compact.StartsWith("K") || compact.StartsWith("P")))
             {
                 return "PL";
             }

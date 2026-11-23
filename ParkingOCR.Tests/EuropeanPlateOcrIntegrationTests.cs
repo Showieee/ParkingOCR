@@ -16,11 +16,12 @@ public class EuropeanPlateOcrIntegrationTests
     {
         _output = output;
         var validator = new EuropeanPlateValidator();
-        var detector = new PlateDetector();
+        var detector = new OnnxPlateDetector();
+        var sequenceOcr = new OnnxSequenceOcr();
         var segmenter = new CharacterSegmenter();
         var classifier = new OnnxCharacterClassifier();
 
-        _service = new LicensePlateOcrService(detector, segmenter, classifier, validator);
+        _service = new LicensePlateOcrService(detector, segmenter, classifier, validator, sequenceOcr);
         Directory.CreateDirectory(TestImagesDir);
     }
 

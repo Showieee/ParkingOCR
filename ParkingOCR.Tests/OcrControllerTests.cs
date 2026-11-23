@@ -18,11 +18,12 @@ public class OcrControllerTests
 
     public OcrControllerTests()
     {
-        var validator = new RomanianPlateValidator();
-        var detector = new PlateDetector();
+        var validator = new EuropeanPlateValidator();
+        var detector = new OnnxPlateDetector();
+        var sequenceOcr = new OnnxSequenceOcr();
         var segmenter = new CharacterSegmenter();
         var classifier = new OnnxCharacterClassifier();
-        var ocrService = new LicensePlateOcrService(detector, segmenter, classifier, validator);
+        var ocrService = new LicensePlateOcrService(detector, segmenter, classifier, validator, sequenceOcr);
 
         // Web project directory contains SampleImages
         var baseDir = AppContext.BaseDirectory;

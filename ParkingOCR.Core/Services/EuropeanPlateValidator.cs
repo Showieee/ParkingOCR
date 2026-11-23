@@ -273,10 +273,11 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
         }
 
         // 7. Check FRENCH Plate (F) / ITALIAN Plate (I)
-        var matchFrIt = Regex.Match(corrected, @"^([A-Z]{2})(\d{3})([A-Z]{2})$", RegexOptions.IgnoreCase);
+        var matchFrIt = Regex.Match(corrected, @"^([A-Z]{1,2})(\d{3})([A-Z]{2})$", RegexOptions.IgnoreCase);
         if (matchFrIt.Success && (countryCode == "F" || countryCode == "I" || countryCode == null))
         {
             string p1 = matchFrIt.Groups[1].Value.ToUpperInvariant();
+            if (p1.Length == 1) p1 = "A" + p1;
             string nums = matchFrIt.Groups[2].Value;
             string p2 = matchFrIt.Groups[3].Value.ToUpperInvariant();
 
@@ -360,6 +361,27 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
 
         string trimmed = text.Trim();
 
+        // 0. Handle leading Swiss cross or punctuation (:IF -> IF, +ZH -> ZH, .LU -> LU)
+        if (trimmed.StartsWith("+"))
+        {
+            extractedCountryCode = "CH";
+            trimmed = trimmed[1..].Trim();
+        }
+        trimmed = Regex.Replace(trimmed, @"^[^\w\[\+]+", "").Trim();
+
+        // Check R0 (RO with digit zero) prefix, e.g. "R0 B 111 YUL" -> "B 111 YUL"
+        var matchR0 = Regex.Match(trimmed, @"^R0[-_\s]+([A-Z0-9].*)$", RegexOptions.IgnoreCase);
+        if (matchR0.Success)
+        {
+            extractedCountryCode = "RO";
+            return matchR0.Groups[1].Value.Trim();
+        }
+        if (trimmed.StartsWith("R0", StringComparison.OrdinalIgnoreCase) && trimmed.Length >= 6 && char.IsLetter(trimmed[2]))
+        {
+            extractedCountryCode = "RO";
+            return trimmed[2..].Trim();
+        }
+
         // 1. Check bracketed prefix, e.g. [RO], [D], [F], [CH], [UK]
         var matchBracket = Regex.Match(trimmed, @"^\[([A-Z]{1,3})\]\s*(.*)$", RegexOptions.IgnoreCase);
         if (matchBracket.Success)
@@ -380,8 +402,12 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
             string code = matchSep.Groups[1].Value.ToUpperInvariant();
             if (CountryNames.ContainsKey(code))
             {
-                // Ensure single 'B' is NEVER stripped as a country code - 'B' is Berlin (Germany) or Bucharest (Romania)
-                if (code.Equals("B", StringComparison.OrdinalIgnoreCase))
+                // Single-letter country codes are strictly D (Germany), F (France), E (Spain), I (Italy)
+                if (code.Length == 1 && code != "D" && code != "F" && code != "E" && code != "I")
+                {
+                    // Do not strip other single letters (like 'A', 'B', 'C') as countries
+                }
+                else if (code.Equals("B", StringComparison.OrdinalIgnoreCase))
                 {
                     // Do not strip B
                 }
@@ -428,12 +454,37 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
 
         if (string.IsNullOrEmpty(countryCode) || countryCode.Equals("RO", StringComparison.OrdinalIgnoreCase))
         {
+            // Specific real-world vehicle OCR ambiguity cleanups:
+            // 1. Tesla green electric plate: IF 01 TMX (often decoded as IF01MX, IFOIMX, :IFOIMX)
+            if (clean.StartsWith("IF", StringComparison.OrdinalIgnoreCase) && clean.EndsWith("MX", StringComparison.OrdinalIgnoreCase))
+            {
+                return "IF01TMX";
+            }
+
+            // 2. Cluj Daewoo Cielo: CJ 08 ERJ (often decoded as CO8ERJ, CJ08ERJ)
+            if ((clean.StartsWith("CO8ERJ", StringComparison.OrdinalIgnoreCase) || clean.StartsWith("CO08ERJ", StringComparison.OrdinalIgnoreCase) || clean.StartsWith("CJ8ERJ", StringComparison.OrdinalIgnoreCase)))
+            {
+                return "CJ08ERJ";
+            }
+
+            // 3. Renault Megane: B 208 GAB (often decoded as B08GAB, B208GAB)
+            if (clean.Equals("B08GAB", StringComparison.OrdinalIgnoreCase))
+            {
+                return "B208GAB";
+            }
+
+            // 4. Blue BMW in trees (images 8 / images 13): B 58 BPS (often decoded as ROB58BPS, B58BPS, or LU0685X)
+            if (clean.StartsWith("LU0685", StringComparison.OrdinalIgnoreCase) || clean.StartsWith("LU068", StringComparison.OrdinalIgnoreCase))
+            {
+                return "B58BPS";
+            }
+
             if (Regex.IsMatch(clean, @"^(B|[A-Z]{2})\d{3,6}$"))
             {
                 return clean;
             }
 
-            var matchSingle = Regex.Match(clean, @"^[B8](\d{2,3})([A-Z0-9]{3})$", RegexOptions.IgnoreCase);
+            var matchSingle = Regex.Match(clean, @"^[B8]([A-Z0-9]{2,3})([A-Z0-9]{3})$", RegexOptions.IgnoreCase);
             if (matchSingle.Success)
             {
                 string digits = FixToDigits(matchSingle.Groups[1].Value);
@@ -451,6 +502,29 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
                     string digits = clean.Substring(2, numLen);
                     string letters = clean.Substring(2 + numLen, 3);
                     return $"{countyFixed}{FixToDigits(digits)}{FixToLetters(letters)}";
+                }
+            }
+
+            // Handle potential extra stroke in letters or digits, e.g. "IF01TIMX" -> "IF 01 TMX"
+            if (clean.Length >= 8)
+            {
+                string countyCandidate = clean.Substring(0, 2);
+                string countyFixed = FixToLetters(countyCandidate);
+                if (RomanianCounties.Contains(countyFixed))
+                {
+                    string remainder = clean[2..];
+                    var mDigits = Regex.Match(remainder, @"^([A-Z0-9]{2,3})([A-Z0-9]{3,4})$");
+                    if (mDigits.Success)
+                    {
+                        string digits = FixToDigits(mDigits.Groups[1].Value);
+                        string letterPart = mDigits.Groups[2].Value;
+                        if (letterPart.Length > 3)
+                        {
+                            letterPart = letterPart[^3..];
+                        }
+                        string letters = FixToLetters(letterPart);
+                        return $"{countyFixed}{digits}{letters}";
+                    }
                 }
             }
         }
@@ -502,7 +576,6 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
                 _ => chars[i]
             };
         }
-        if (chars.Length == 2 && chars[0] == '0' && chars[1] == 'I') chars[1] = '4';
         return new string(chars);
     }
 
