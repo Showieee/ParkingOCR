@@ -153,7 +153,7 @@ public class OnnxSequenceOcr : IPlateSequenceOcr, IDisposable
                     char ch = strChar.Length > 0 ? strChar[0] : ' ';
                     sb.Append(ch);
 
-                    if (ch != ' ')
+                    if (char.IsLetterOrDigit(ch))
                     {
                         totalConf += conf;
                         count++;

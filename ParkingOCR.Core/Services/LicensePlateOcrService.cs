@@ -277,7 +277,11 @@ public class LicensePlateOcrService : ILicensePlateOcrService
 
             // 5. Validate and clean with European plate validator
             var validation = _europeanValidator.ValidateAndClean(cleanPlate, detectedCountry);
-            string finalPlateText = validation.FormattedPlate;
+            string finalPlateText = CleanNoiseSymbols(validation.FormattedPlate);
+            if (string.IsNullOrWhiteSpace(finalPlateText))
+            {
+                finalPlateText = CleanNoiseSymbols(cleanPlate);
+            }
             if (string.IsNullOrEmpty(detectedCountry))
             {
                 detectedCountry = validation.CountryCode;
@@ -290,15 +294,17 @@ public class LicensePlateOcrService : ILicensePlateOcrService
                 plateCropJpeg = encMs.ToArray();
             }
 
+            var filteredCharBoxes = charBoxes.Where(c => char.IsLetterOrDigit(c.Character)).ToList();
+
             var currentResult = new LicensePlateResult
             {
                 Success = true,
                 PlateText = finalPlateText,
-                RawText = rawText,
+                RawText = CleanNoiseSymbols(rawText),
                 CountryCode = detectedCountry,
                 Confidence = avgConf,
                 BoundingBox = candidate.BoundingBox,
-                Characters = charBoxes,
+                Characters = filteredCharBoxes,
                 Validation = validation,
                 PlateCropJpeg = plateCropJpeg,
                 Message = validation.ValidationMessage
@@ -506,8 +512,9 @@ public class LicensePlateOcrService : ILicensePlateOcrService
     private static string CleanNoiseSymbols(string text)
     {
         if (string.IsNullOrWhiteSpace(text)) return string.Empty;
-        string s = Regex.Replace(text, @"^[+:\-_„\.\s]+", "");
-        s = Regex.Replace(s, @"[+:\-_„\.\s]+$", "");
+        // Trim leading and trailing characters that are not alphanumeric (A-Za-z or 0-9)
+        string s = Regex.Replace(text.Trim(), @"^[^A-Za-z0-9]+", "");
+        s = Regex.Replace(s, @"[^A-Za-z0-9]+$", "");
         return s.Trim();
     }
 

@@ -144,4 +144,27 @@ public class EuropeanPlateValidatorTests
         string formatted = _validator.FormatNaturalPlateSpacing("ABC123DEF");
         Assert.Equal("ABC 123 DEF", formatted);
     }
+
+    [Theory]
+    [InlineData(":IF 01 TMX.", "IF 01 TMX")]
+    [InlineData("-LU-068SX-", "LU-068SX")]
+    [InlineData("„2TS4ME...", "2TS4ME")]
+    [InlineData(".ZH 84521.", "ZH 84521")]
+    [InlineData("---B 111 YUL---", "B 111 YUL")]
+    [InlineData("!@#B 208 GAB$%^", "B 208 GAB")]
+    public void TrimNonAlphanumeric_RemovesLeadingAndTrailingNoiseCharacters(string input, string expected)
+    {
+        string trimmed = EuropeanPlateValidator.TrimNonAlphanumeric(input);
+        Assert.Equal(expected, trimmed);
+    }
+
+    [Theory]
+    [InlineData(":IF 01 TMX.", "RO", "IF 01 TMX")]
+    [InlineData(".LU 068SX.", null, "LU 068 SX")]
+    [InlineData("„2TS4ME", null, "2 TS 4 ME")]
+    public void ValidateAndClean_TrimsLeadingAndTrailingNonAlphanumerics(string input, string? country, string expectedFormatted)
+    {
+        var result = _validator.ValidateAndClean(input, country);
+        Assert.Equal(expectedFormatted, result.FormattedPlate);
+    }
 }

@@ -351,7 +351,23 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
             ? "Valid European plate structure."
             : "Plate format did not strictly match standard patterns.";
 
+        if (!string.IsNullOrEmpty(result.FormattedPlate))
+        {
+            result.FormattedPlate = TrimNonAlphanumeric(result.FormattedPlate);
+        }
+
         return result;
+    }
+
+    /// <summary>
+    /// Trims all leading and trailing characters that are not alphanumeric (A-Za-z or 0-9).
+    /// </summary>
+    public static string TrimNonAlphanumeric(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text)) return string.Empty;
+        string trimmed = Regex.Replace(text.Trim(), @"^[^A-Za-z0-9]+", "");
+        trimmed = Regex.Replace(trimmed, @"[^A-Za-z0-9]+$", "");
+        return trimmed.Trim();
     }
 
     public string StripCountryPrefix(string text, out string? extractedCountryCode)
@@ -367,19 +383,26 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
             extractedCountryCode = "CH";
             trimmed = trimmed[1..].Trim();
         }
-        trimmed = Regex.Replace(trimmed, @"^[^\w\[\+]+", "").Trim();
+
+        // Strip leading non-alphanumeric noise symbols except bracket for [RO], [D], etc.
+        if (!trimmed.StartsWith("["))
+        {
+            trimmed = Regex.Replace(trimmed, @"^[^A-Za-z0-9]+", "");
+        }
+        // Strip trailing non-alphanumeric symbols
+        trimmed = Regex.Replace(trimmed, @"[^A-Za-z0-9]+$", "").Trim();
 
         // Check R0 (RO with digit zero) prefix, e.g. "R0 B 111 YUL" -> "B 111 YUL"
         var matchR0 = Regex.Match(trimmed, @"^R0[-_\s]+([A-Z0-9].*)$", RegexOptions.IgnoreCase);
         if (matchR0.Success)
         {
             extractedCountryCode = "RO";
-            return matchR0.Groups[1].Value.Trim();
+            return TrimNonAlphanumeric(matchR0.Groups[1].Value);
         }
         if (trimmed.StartsWith("R0", StringComparison.OrdinalIgnoreCase) && trimmed.Length >= 6 && char.IsLetter(trimmed[2]))
         {
             extractedCountryCode = "RO";
-            return trimmed[2..].Trim();
+            return TrimNonAlphanumeric(trimmed[2..]);
         }
 
         // 1. Check bracketed prefix, e.g. [RO], [D], [F], [CH], [UK], [PL]
@@ -390,7 +413,7 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
             if (CountryNames.ContainsKey(code))
             {
                 extractedCountryCode = code;
-                return matchBracket.Groups[2].Value;
+                return TrimNonAlphanumeric(matchBracket.Groups[2].Value);
             }
         }
 
@@ -399,7 +422,7 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
         if (matchSingleSep.Success)
         {
             extractedCountryCode = matchSingleSep.Groups[1].Value.ToUpperInvariant();
-            return matchSingleSep.Groups[2].Value.Trim();
+            return TrimNonAlphanumeric(matchSingleSep.Groups[2].Value);
         }
 
         // 2b. Check 2-letter country prefix followed strictly by hyphen or underscore: "UK-BD12-XYZ", "GB-LN14-ABC", "RO-B-123-ABC"
@@ -413,7 +436,7 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
                 if (!code.Equals("CH", StringComparison.OrdinalIgnoreCase) || !matchHyphenSep.Groups[2].Value.All(char.IsDigit))
                 {
                     extractedCountryCode = code;
-                    return matchHyphenSep.Groups[2].Value.Trim();
+                    return TrimNonAlphanumeric(matchHyphenSep.Groups[2].Value);
                 }
             }
         }
@@ -423,23 +446,23 @@ public class EuropeanPlateValidator : IEuropeanPlateValidator
         if (matchRoAttached.Success)
         {
             extractedCountryCode = "RO";
-            return matchRoAttached.Groups[2].Value.Trim();
+            return TrimNonAlphanumeric(matchRoAttached.Groups[2].Value);
         }
 
         var matchEuAttached = Regex.Match(trimmed, @"^(EU)[-_\s]*(B\s*\d{2,3}\s*[A-Z]{3}|[A-Z]{2}\s*\d{2,3}\s*[A-Z]{3})$", RegexOptions.IgnoreCase);
         if (matchEuAttached.Success)
         {
             extractedCountryCode = "EU";
-            return matchEuAttached.Groups[2].Value.Trim();
+            return TrimNonAlphanumeric(matchEuAttached.Groups[2].Value);
         }
 
         if (trimmed.StartsWith("RO ", StringComparison.OrdinalIgnoreCase) || trimmed.StartsWith("RO-", StringComparison.OrdinalIgnoreCase))
         {
             extractedCountryCode = "RO";
-            return trimmed[3..].Trim();
+            return TrimNonAlphanumeric(trimmed[3..]);
         }
 
-        return trimmed;
+        return TrimNonAlphanumeric(trimmed);
     }
 
     public string ApplySyntaxCorrections(string text, string? countryCode = null)
